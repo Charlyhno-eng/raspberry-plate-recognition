@@ -1,0 +1,17 @@
+# Virtual environment
+venv/
+
+# IDE/editor config files
+.ropeproject/
+.vscode/
+.idea/
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Env files
+.env
+.env.*
