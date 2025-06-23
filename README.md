@@ -16,3 +16,9 @@ Currently suitable for Romanian license plates. If you want other formats, pleas
 ## Usage
 
 - python plate_detector_live.py
+
+---
+
+## Next evolution
+
+The next evolution will be to move the model to ONNX and do all the processing in Rust
