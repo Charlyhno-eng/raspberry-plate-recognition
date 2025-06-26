@@ -12,7 +12,7 @@ max_plate_age_seconds = 10
 resize_width = 416
 tesseract_config = '--psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
 
-url = "http://<ip>/video"
+url = "http://192.168.100.67:4747/video"
 cap = cv2.VideoCapture(url)
 # Replace by : cap = cv2.VideoCapture(0) if you are not using an IP camera
 
