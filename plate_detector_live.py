@@ -9,8 +9,12 @@ model = YOLO("yolov8n-license_plate.pt")
 last_detected_plates = {}
 max_plate_age_seconds = 10
 
-resize_width = 640
+resize_width = 416
 tesseract_config = '--psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+
+url = "http://192.168.100.64:4747/video"
+cap = cv2.VideoCapture(url)
+# Replace by : cap = cv2.VideoCapture(0) if you are not using an IP camera
 
 def preprocess_plate(plate_crop):
     """
@@ -42,8 +46,6 @@ def extract_valid_plate(plate_crop):
     return None
 
 def display_camera_with_detection():
-    cap = cv2.VideoCapture(0)
-
     last_detection_time = 0
     ocr_interval_second = 2
 
@@ -65,7 +67,7 @@ def display_camera_with_detection():
         scale = resize_width / width
         frame_small = cv2.resize(frame, (resize_width, int(height * scale)))
 
-        results = model.predict(source=frame_small, conf=0.25, imgsz=640, verbose=False)
+        results = model.predict(source=frame_small, conf=0.25, imgsz=416, verbose=False)
         for result in results:
             for box in result.boxes:
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
