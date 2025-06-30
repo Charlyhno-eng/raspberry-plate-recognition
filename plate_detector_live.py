@@ -1,42 +1,96 @@
 import time
 import cv2
 import pytesseract
-from ultralytics import YOLO
+import onnx
+import onnxruntime as onnxr
+import numpy as np
 from plate_format.plate_format_ro import is_valid_plate, normalize_plate_format
 
-model = YOLO("yolov8n-license_plate.pt")
+IMAGE_SIZE = 512
+ONNX_PATH = "yolov8n-license_plate.onnx"
 
 last_detected_plates = {}
 max_plate_age_seconds = 10
 
-resize_width = 416
-tesseract_config = '--psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+# Performance optimization
+clahe = cv2.createCLAHE(clipLimit=1.8, tileGridSize=(8,8))
 
-url = "http://192.168.100.67:4747/video"
-cap = cv2.VideoCapture(url)
-# Replace by : cap = cv2.VideoCapture(0) if you are not using an IP camera
+# Create a session
+onnx_model = onnx.load(ONNX_PATH)
+onnx.checker.check_model(onnx_model)
+
+session = onnxr.InferenceSession(ONNX_PATH)
+input_name = session.get_inputs()[0].name
+output_names = [out.name for out in session.get_outputs()]
+
+def findIntersectionOverUnion(box1, box2):
+    """Computes IoU between two boxes given as (cx, cy, w, h)."""
+    box1_w = box1[2]/2.0
+    box1_h = box1[3]/2.0
+    box2_w = box2[2]/2.0
+    box2_h = box2[3]/2.0
+
+    b1_1, b1_2 = box1[0] - box1_w, box1[1] - box1_h
+    b1_3, b1_4 = box1[0] + box1_w, box1[1] + box1_h
+    b2_1, b2_2 = box2[0] - box2_w, box2[1] - box2_h
+    b2_3, b2_4 = box2[0] + box2_w, box2[1] + box2_h
+
+    x1, y1 = max(b1_1, b2_1), max(b1_2, b2_2)
+    x2, y2 = min(b1_3, b2_3), min(b1_4, b2_4)
+
+    intersect = max(0, x2 - x1) * max(0, y2 - y1)
+    area1 = (b1_3 - b1_1) * (b1_4 - b1_2)
+    area2 = (b2_3 - b2_1) * (b2_4 - b2_2)
+    union = area1 + area2 - intersect
+
+    return intersect / union if union > 0 else 0
+
+def deskew_image(image, max_angle=10):
+    """Straightens the image if it is tilted."""
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 50, 150, apertureSize=3)
+
+    lines = cv2.HoughLines(edges, 1, np.pi / 180, threshold=100)
+    if lines is None:
+        return image
+
+    angles = []
+    for rho, theta in lines[:, 0]:
+        angle_deg = (theta * 180 / np.pi) - 90
+        if -max_angle <= angle_deg <= max_angle:
+            angles.append(angle_deg)
+
+    if not angles:
+        return image
+
+    median_angle = np.median(angles)
+    if abs(median_angle) < 1:
+        return image
+
+    (h, w) = image.shape[:2]
+    center = (w // 2, h // 2)
+    M = cv2.getRotationMatrix2D(center, median_angle, 1.0)
+    rotated = cv2.warpAffine(image, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+    return rotated
 
 def preprocess_plate(plate_crop):
-    """
-    Applies a set of preprocessing steps to enhance plate image for OCR.
-    Includes contrast enhancement, denoising, binarization, and deskewing.
-    """
-    clahe = cv2.createCLAHE(clipLimit=1.8, tileGridSize=(8, 8))
+    """Applies a set of preprocessing steps to enhance plate image for OCR: contrast enhancement, denoising, binarization, and deskewing."""
     gray = cv2.cvtColor(plate_crop, cv2.COLOR_BGR2GRAY)
     gray = clahe.apply(gray)
     blur = cv2.bilateralFilter(gray, 11, 16, 16)
-    thresh = cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 13, 2)
+    color_for_deskew = cv2.cvtColor(blur, cv2.COLOR_GRAY2BGR)
+    deskewed = deskew_image(color_for_deskew)
+    deskewed_gray = cv2.cvtColor(deskewed, cv2.COLOR_BGR2GRAY)
+    thresh = cv2.adaptiveThreshold(deskewed_gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 13, 2)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 1))
     morph = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
     return morph
 
 def extract_valid_plate(plate_crop):
-    """
-    Runs OCR on the plate image and returns a valid Romanian plate string if found.
-    Also displays the preprocessed plate image for debugging.
-    """
+    """Runs OCR on the plate image and returns a valid Romanian plate string if found."""
     processed = preprocess_plate(plate_crop)
-    raw_text = pytesseract.image_to_string(processed, config=tesseract_config)
+    config = '--psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+    raw_text = pytesseract.image_to_string(processed, config=config)
     raw_text = raw_text.strip().replace("\n", " ").replace("\f", "")
     raw_text = ''.join(c for c in raw_text if c.isalnum() or c.isspace())
 
@@ -45,56 +99,100 @@ def extract_valid_plate(plate_crop):
 
     return None
 
-def display_camera_with_detection():
-    last_detection_time = 0
-    ocr_interval_second = 2
+def run_onnx_inference(frame):
+    """Preprocesses frame and runs ONNX inference."""
+    resized = cv2.resize(frame, (IMAGE_SIZE, IMAGE_SIZE))
+    input_tensor = resized.astype(np.float32) / 255.0
+    input_tensor = np.transpose(input_tensor, (2, 0, 1))
+    input_tensor = np.expand_dims(input_tensor, axis=0)
+    return session.run(output_names, {input_name: input_tensor})
 
-    frame_count = 0
-    detect_every_n_frames = 5
+def postprocess_detections(outputs, conf_thres=0.25, iou_thres=0.7):
+    """Filters detections using confidence and IoU thresholds."""
+    detections = []
+    for detection in outputs[0]:
+        boxes = detection[:4, :]
+        scores = detection[4:7, :]
+        class_ids = np.argmax(scores, axis=0)
+        confs = scores[class_ids, np.arange(scores.shape[1])]
+        valid = confs >= conf_thres
+        indices = np.where(valid)[0]
+
+        flags = np.zeros(len(indices))
+        for i, idx in enumerate(indices):
+            if flags[i]: continue
+            box = boxes[:, idx]
+            class_id = class_ids[idx]
+            score = confs[idx]
+
+            for j, idx2 in enumerate(indices):
+                if idx2 < idx or class_ids[idx2] != class_id:
+                    continue
+                if findIntersectionOverUnion(box, boxes[:, idx2]) >= iou_thres:
+                    flags[j] = True
+
+            detections.append({"bbox": box, "confidence": score, "class_id": class_id})
+            flags[i] = True
+    return detections
+
+def extract_plate_box(frame, detection, x_scale, y_scale):
+    """Extracts plate crop from frame based on detection."""
+    x, y, w, h = detection["bbox"]
+    x1 = int((x - w / 2) * x_scale)
+    y1 = int((y - h / 2) * y_scale)
+    x2 = int((x + w / 2) * x_scale)
+    y2 = int((y + h / 2) * y_scale)
+    if x2 - x1 < 60 or y2 - y1 < 20:
+        return None, None
+    return (x1, y1, x2, y2), frame[y1:y2, x1:x2]
+
+def display_camera_with_detection():
+    """Runs camera loop, detects plates, applies OCR."""
+    cap = cv2.VideoCapture(0)
+    last_detection_time = 0
+    ocr_interval = 3
+    conf_thres = 0.25
+    iou_thres = 0.7
+
+    x_scale = None
+    y_scale = None
 
     while True:
         ret, frame = cap.read()
         if not ret:
-            break
-
-        frame_count += 1
-        if frame_count % detect_every_n_frames != 0:
             continue
 
-        current_time = time.time()
+        now = time.time()
 
-        height, width = frame.shape[:2]
-        scale = resize_width / width
-        frame_small = cv2.resize(frame, (resize_width, int(height * scale)))
+        if x_scale is None or y_scale is None:
+            h, w, _ = frame.shape
+            x_scale = w / IMAGE_SIZE
+            y_scale = h / IMAGE_SIZE
 
-        results = model.predict(source=frame_small, conf=0.25, imgsz=416, verbose=False)
-        for result in results:
-            for box in result.boxes:
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
-                width = x2 - x1
-                height = y2 - y1
+        outputs = run_onnx_inference(frame)
+        detections = postprocess_detections(outputs, conf_thres, iou_thres)
 
-                if width < 60 or height < 20:
-                    continue
+        for det in detections:
+            key, crop = extract_plate_box(frame, det, x_scale, y_scale)
+            if crop is None or crop.size == 0:
+                continue
+            if key in last_detected_plates and now - last_detected_plates[key] < max_plate_age_seconds:
+                continue
+            if now - last_detection_time > ocr_interval:
+                plate = extract_valid_plate(crop)
+                if plate:
+                    print(f"[{time.strftime('%H:%M:%S')}] License Plate:", plate)
+                    last_detected_plates[key] = now
+                    last_detection_time = now
 
-                key = (x1, y1, x2, y2)
-                if key in last_detected_plates and current_time - last_detected_plates[key] < max_plate_age_seconds:
-                    continue
+        del frame
 
-                if current_time - last_detection_time > ocr_interval_second:
-                    plate_crop = frame[y1:y2, x1:x2]
-                    if plate_crop.size == 0:
-                        continue
-
-                    plate = extract_valid_plate(plate_crop)
-                    if plate:
-                        print(f"[{time.strftime('%H:%M:%S')}] Plate detected : {plate}")
-                        last_detected_plates[key] = current_time
-                        last_detection_time = current_time
-
-        time.sleep(0.02)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
 
     cap.release()
+    cv2.destroyWindow("Preprocessed Plate")
+    cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     display_camera_with_detection()
