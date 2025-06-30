@@ -1,4 +1,6 @@
 import time
+import psutil
+import sys
 import cv2
 import pytesseract
 import onnx
@@ -22,6 +24,19 @@ onnx.checker.check_model(onnx_model)
 session = onnxr.InferenceSession(ONNX_PATH)
 input_name = session.get_inputs()[0].name
 output_names = [out.name for out in session.get_outputs()]
+
+def print_system_usage():
+    """Displays CPU and RAM costs in real time."""
+    cpu_percent = psutil.cpu_percent(interval=None)
+    mem = psutil.virtual_memory()
+    mem_percent = mem.percent
+    total_ram_gb = mem.total / (1024 ** 3)
+    used_ram_gb = (mem.total - mem.available) / (1024 ** 3)
+    message = (f"Live CPU Usage: {cpu_percent:>5.1f}% | "f"RAM Usage: {used_ram_gb:>5.2f}GB / {total_ram_gb:.2f}GB ({mem_percent:.1f}%)")
+
+    sys.stdout.write('\r' + ' ' * 80 + '\r')
+    sys.stdout.write(message)
+    sys.stdout.flush()
 
 def findIntersectionOverUnion(box1, box2):
     """Computes IoU between two boxes given as (cx, cy, w, h)."""
@@ -147,7 +162,6 @@ def extract_plate_box(frame, detection, x_scale, y_scale):
     return (x1, y1, x2, y2), frame[y1:y2, x1:x2]
 
 def display_camera_with_detection():
-    """Runs camera loop, detects plates, applies OCR."""
     cap = cv2.VideoCapture(0)
     last_detection_time = 0
     ocr_interval = 3
@@ -157,12 +171,19 @@ def display_camera_with_detection():
     x_scale = None
     y_scale = None
 
+    last_system_stats_time = 0
+    system_stats_interval = 1
+
     while True:
         ret, frame = cap.read()
         if not ret:
             continue
 
         now = time.time()
+
+        if now - last_system_stats_time > system_stats_interval:
+            print_system_usage()
+            last_system_stats_time = now
 
         if x_scale is None or y_scale is None:
             h, w, _ = frame.shape
@@ -181,9 +202,11 @@ def display_camera_with_detection():
             if now - last_detection_time > ocr_interval:
                 plate = extract_valid_plate(crop)
                 if plate:
+                    sys.stdout.write('\n')
                     print(f"[{time.strftime('%H:%M:%S')}] License Plate:", plate)
                     last_detected_plates[key] = now
                     last_detection_time = now
+                    print_system_usage()
 
         del frame
 
@@ -195,4 +218,5 @@ def display_camera_with_detection():
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
+    print_system_usage()
     display_camera_with_detection()
