@@ -8,13 +8,16 @@ Currently suitable for Romanian license plates. If you want other formats, pleas
 
 ## Installation
 
+- sudo apt install tesseract-ocr
+
 - python3 -m venv venv
 - source venv/bin/activate
 - pip install -r requirements.txt
-- sudo apt install tesseract-ocr
 
 ## Usage
 
+- python3 -m venv venv
+- source venv/bin/activate
 - python plate_detector_live.py
 
 ---
