@@ -10,11 +10,12 @@ from plate_format.plate_format_ro import is_valid_plate, normalize_plate_format
 
 IMAGE_SIZE = 512
 ONNX_PATH = "yolov8n-license_plate.onnx"
+CONFIG_TESSERACT = '--psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
 
 last_detected_plates = {}
 max_plate_age_seconds = 10
 
-# Performance optimization
+# Out of the function to optimize performance
 clahe = cv2.createCLAHE(clipLimit=1.8, tileGridSize=(8,8))
 
 # Create a session
@@ -29,10 +30,9 @@ def print_system_usage():
     """Displays CPU and RAM costs in real time."""
     cpu_percent = psutil.cpu_percent(interval=None)
     mem = psutil.virtual_memory()
-    mem_percent = mem.percent
     total_ram_gb = mem.total / (1024 ** 3)
     used_ram_gb = (mem.total - mem.available) / (1024 ** 3)
-    message = (f"Live CPU Usage: {cpu_percent:>5.1f}% | "f"RAM Usage: {used_ram_gb:>5.2f}GB / {total_ram_gb:.2f}GB ({mem_percent:.1f}%)")
+    message = (f"Live CPU Usage: {cpu_percent:>5.1f}% | "f"RAM Usage: {used_ram_gb:>5.2f}GB / {total_ram_gb:.2f}GB ({mem.percent:.1f}%)")
 
     sys.stdout.write('\r' + ' ' * 80 + '\r')
     sys.stdout.write(message)
@@ -40,10 +40,8 @@ def print_system_usage():
 
 def findIntersectionOverUnion(box1, box2):
     """Computes IoU between two boxes given as (cx, cy, w, h)."""
-    box1_w = box1[2]/2.0
-    box1_h = box1[3]/2.0
-    box2_w = box2[2]/2.0
-    box2_h = box2[3]/2.0
+    box1_w, box1_h = box1[2]/2.0, box1[3]/2.0
+    box2_w, box2_h = box2[2]/2.0, box2[3]/2.0
 
     b1_1, b1_2 = box1[0] - box1_w, box1[1] - box1_h
     b1_3, b1_4 = box1[0] + box1_w, box1[1] + box1_h
@@ -103,15 +101,11 @@ def preprocess_plate(plate_crop):
 
 def extract_valid_plate(plate_crop):
     """Runs OCR on the plate image and returns a valid Romanian plate string if found."""
-    processed = preprocess_plate(plate_crop)
-    config = '--psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
-    raw_text = pytesseract.image_to_string(processed, config=config)
+    raw_text = pytesseract.image_to_string(preprocess_plate(plate_crop), config=CONFIG_TESSERACT)
     raw_text = raw_text.strip().replace("\n", " ").replace("\f", "")
     raw_text = ''.join(c for c in raw_text if c.isalnum() or c.isspace())
-
     if is_valid_plate(raw_text):
         return normalize_plate_format(raw_text)
-
     return None
 
 def run_onnx_inference(frame):
@@ -136,9 +130,7 @@ def postprocess_detections(outputs, conf_thres=0.25, iou_thres=0.7):
         flags = np.zeros(len(indices))
         for i, idx in enumerate(indices):
             if flags[i]: continue
-            box = boxes[:, idx]
-            class_id = class_ids[idx]
-            score = confs[idx]
+            box, class_id, score = boxes[:, idx], class_ids[idx], confs[idx]
 
             for j, idx2 in enumerate(indices):
                 if idx2 < idx or class_ids[idx2] != class_id:
@@ -153,10 +145,8 @@ def postprocess_detections(outputs, conf_thres=0.25, iou_thres=0.7):
 def extract_plate_box(frame, detection, x_scale, y_scale):
     """Extracts plate crop from frame based on detection."""
     x, y, w, h = detection["bbox"]
-    x1 = int((x - w / 2) * x_scale)
-    y1 = int((y - h / 2) * y_scale)
-    x2 = int((x + w / 2) * x_scale)
-    y2 = int((y + h / 2) * y_scale)
+    x1, y1 = int((x - w / 2) * x_scale), int((y - h / 2) * y_scale)
+    x2, y2 = int((x + w / 2) * x_scale), int((y + h / 2) * y_scale)
     if x2 - x1 < 60 or y2 - y1 < 20:
         return None, None
     return (x1, y1, x2, y2), frame[y1:y2, x1:x2]
@@ -165,14 +155,11 @@ def display_camera_with_detection():
     cap = cv2.VideoCapture(0)
     last_detection_time = 0
     ocr_interval = 3
-    conf_thres = 0.25
-    iou_thres = 0.7
+    conf_thres, iou_thres = 0.25, 0.7
 
-    x_scale = None
-    y_scale = None
+    x_scale, y_scale = None, None
 
-    last_system_stats_time = 0
-    system_stats_interval = 1
+    last_system_stats_time, system_stats_interval = 0, 1
 
     while True:
         ret, frame = cap.read()
@@ -180,7 +167,6 @@ def display_camera_with_detection():
             continue
 
         now = time.time()
-
         if now - last_system_stats_time > system_stats_interval:
             print_system_usage()
             last_system_stats_time = now
@@ -203,10 +189,10 @@ def display_camera_with_detection():
                 plate = extract_valid_plate(crop)
                 if plate:
                     sys.stdout.write('\n')
-                    print(f"[{time.strftime('%H:%M:%S')}] License Plate:", plate)
-                    last_detected_plates[key] = now
-                    last_detection_time = now
-                    print_system_usage()
+                    sys.stdout.write(f"[{time.strftime('%H:%M:%S')}] License Plate: {plate}\n\n")
+                    sys.stdout.flush()
+
+                    last_detected_plates[key], last_detection_time = now, now
 
         del frame
 
@@ -214,9 +200,7 @@ def display_camera_with_detection():
             break
 
     cap.release()
-    cv2.destroyWindow("Preprocessed Plate")
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    print_system_usage()
     display_camera_with_detection()
