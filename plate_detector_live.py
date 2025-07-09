@@ -1,5 +1,4 @@
 import time
-import psutil
 import sys
 import cv2
 import pytesseract
@@ -25,18 +24,6 @@ onnx.checker.check_model(onnx_model)
 session = onnxr.InferenceSession(ONNX_PATH)
 input_name = session.get_inputs()[0].name
 output_names = [out.name for out in session.get_outputs()]
-
-def print_system_usage():
-    """Displays CPU and RAM costs in real time."""
-    cpu_percent = psutil.cpu_percent(interval=None)
-    mem = psutil.virtual_memory()
-    total_ram_gb = mem.total / (1024 ** 3)
-    used_ram_gb = (mem.total - mem.available) / (1024 ** 3)
-    message = (f"Live CPU Usage: {cpu_percent:>5.1f}% | "f"RAM Usage: {used_ram_gb:>5.2f}GB / {total_ram_gb:.2f}GB ({mem.percent:.1f}%)")
-
-    sys.stdout.write('\r' + ' ' * 80 + '\r')
-    sys.stdout.write(message)
-    sys.stdout.flush()
 
 def findIntersectionOverUnion(box1, box2):
     """Computes IoU between two boxes given as (cx, cy, w, h)."""
@@ -168,7 +155,6 @@ def display_camera_with_detection():
 
         now = time.time()
         if now - last_system_stats_time > system_stats_interval:
-            print_system_usage()
             last_system_stats_time = now
 
         if x_scale is None or y_scale is None:
