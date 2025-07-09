@@ -110,47 +110,42 @@ def extract_plate_box(frame, detection, x_scale, y_scale):
 def display_camera_with_detection():
     cap = cv2.VideoCapture(0)
     last_detection_time = 0
-    ocr_interval = 3
     conf_thres, iou_thres = 0.25, 0.7
-
-    x_scale, y_scale = None, None
+    x_scale = y_scale = None
+    ocr_interval = 3
 
     while True:
         ret, frame = cap.read()
         if not ret:
+            time.sleep(0.1)
             continue
 
-        now = time.time()
-
         if x_scale is None or y_scale is None:
-            h, w, _ = frame.shape
+            h, w = frame.shape[:2]
             x_scale = w / IMAGE_SIZE
             y_scale = h / IMAGE_SIZE
 
-        outputs = run_onnx_inference(frame)
-        detections = postprocess_detections(outputs, conf_thres, iou_thres)
+        now = time.time()
+        if now - last_detection_time >= 0.5:
+            outputs = run_onnx_inference(frame)
+            detections = postprocess_detections(outputs, conf_thres, iou_thres)
 
-        for det in detections:
-            key, crop = extract_plate_box(frame, det, x_scale, y_scale)
-            if crop is None or crop.size == 0:
-                continue
-            if key in last_detected_plates and now - last_detected_plates[key] < max_plate_age_seconds:
-                continue
-            if now - last_detection_time > ocr_interval:
-                plate = extract_valid_plate(crop)
-                if plate:
-                    sys.stdout.write('\n')
-                    sys.stdout.write(f"[{time.strftime('%H:%M:%S')}] License Plate: {plate}\n\n")
-                    sys.stdout.flush()
-
-                    last_detected_plates[key], last_detection_time = now, now
-
-        del frame
+            for det in detections:
+                key, crop = extract_plate_box(frame, det, x_scale, y_scale)
+                if crop is None or crop.size == 0 or key in last_detected_plates:
+                    continue
+                if now - last_detection_time > ocr_interval:
+                    plate = extract_valid_plate(crop)
+                    if plate:
+                        sys.stdout.write(f"\n[{time.strftime('%H:%M:%S')}] License Plate: {plate}\n\n")
+                        sys.stdout.flush()
+                        last_detected_plates[key] = now
+                        last_detection_time = now
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
-        time.sleep(0.2)
+        time.sleep(0.1)  # réduit la charge CPU
 
     cap.release()
     cv2.destroyAllWindows()
