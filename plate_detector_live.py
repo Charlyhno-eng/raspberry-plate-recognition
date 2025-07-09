@@ -145,7 +145,7 @@ def display_camera_with_detection():
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
-        time.sleep(0.1)  # réduit la charge CPU
+        time.sleep(0.1)
 
     cap.release()
     cv2.destroyAllWindows()
