@@ -45,43 +45,12 @@ def findIntersectionOverUnion(box1, box2):
 
     return intersect / union if union > 0 else 0
 
-def deskew_image(image, max_angle=10):
-    """Straightens the image if it is tilted."""
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, 50, 150, apertureSize=3)
-
-    lines = cv2.HoughLines(edges, 1, np.pi / 180, threshold=100)
-    if lines is None:
-        return image
-
-    angles = []
-    for rho, theta in lines[:, 0]:
-        angle_deg = (theta * 180 / np.pi) - 90
-        if -max_angle <= angle_deg <= max_angle:
-            angles.append(angle_deg)
-
-    if not angles:
-        return image
-
-    median_angle = np.median(angles)
-    if abs(median_angle) < 1:
-        return image
-
-    (h, w) = image.shape[:2]
-    center = (w // 2, h // 2)
-    M = cv2.getRotationMatrix2D(center, median_angle, 1.0)
-    rotated = cv2.warpAffine(image, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
-    return rotated
-
 def preprocess_plate(plate_crop):
     """Applies a set of preprocessing steps to enhance plate image for OCR: contrast enhancement, denoising, binarization, and deskewing."""
     gray = cv2.cvtColor(plate_crop, cv2.COLOR_BGR2GRAY)
     gray = clahe.apply(gray)
     blur = cv2.bilateralFilter(gray, 11, 16, 16)
-    color_for_deskew = cv2.cvtColor(blur, cv2.COLOR_GRAY2BGR)
-    deskewed = deskew_image(color_for_deskew)
-    deskewed_gray = cv2.cvtColor(deskewed, cv2.COLOR_BGR2GRAY)
-    thresh = cv2.adaptiveThreshold(deskewed_gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 13, 2)
+    thresh = cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 13, 2)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 1))
     morph = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
     return morph
@@ -146,16 +115,12 @@ def display_camera_with_detection():
 
     x_scale, y_scale = None, None
 
-    last_system_stats_time, system_stats_interval = 0, 1
-
     while True:
         ret, frame = cap.read()
         if not ret:
             continue
 
         now = time.time()
-        if now - last_system_stats_time > system_stats_interval:
-            last_system_stats_time = now
 
         if x_scale is None or y_scale is None:
             h, w, _ = frame.shape
@@ -184,6 +149,8 @@ def display_camera_with_detection():
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
+
+        time.sleep(0.2)
 
     cap.release()
     cv2.destroyAllWindows()
